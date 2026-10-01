@@ -147,6 +147,10 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
         .desk.drag-over { background: #fff2d4; border: 2px dashed #bf8e31; }
         .desk .st-num { color: #0c7167; font-size: 12px; font-weight: 800; line-height: 1.2; }
         .desk .st-name { width: 100%; margin-top: 3px; color: #173f47; font-size: var(--name-font); font-weight: 650; line-height: 1.15; white-space: var(--name-wrap); overflow: hidden; text-overflow: ellipsis; }
+        .seat-data { width: 100%; height: 100%; display: grid; min-height: 0; }
+        .seat-field { min-height: 0; display: flex; align-items: center; justify-content: center; padding: 2px 0; overflow: hidden; }
+        .seat-field-text { width: 100%; color: #173f47; font-weight: 650; line-height: 1.12; white-space: normal; overflow-wrap: anywhere; }
+        .seat-field[data-kind="number"] .seat-field-text { color: #0c7167; font-weight: 800; }
         .desk.empty span { color: #9aadb1 !important; }
         .blackboard {
             margin: 12px auto 0; padding: 10px 22px; flex: 0 0 auto; max-width: 80%;
@@ -204,6 +208,8 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
         .class-selector .class-delete { flex: 0 0 26px; width: 26px; height: 26px; margin: 0; padding: 0; background: transparent; color: #ffbbb3; border: 1px solid #9c6b69; }
         .class-selector .class-delete:hover { background: #613f49; }
         #save-excel { width: 100%; min-height: 68px; padding: 18px 16px; font-size: 16px; box-shadow: 0 6px 18px rgba(81,210,188,.28); }
+        .workbook-save label { color: #365766; }
+        #export-owner { background: #fff; color: #173849; border-color: #b9d0d3; }
         .layout-options { margin-top: 12px; border: 1px solid #496c79; border-radius: 9px; background: #17384a; }
         .layout-options summary { cursor: pointer; padding: 11px 12px; color: #e6f5f2; font-size: 13px; font-weight: 700; list-style-position: inside; }
         .layout-options[open] summary { border-bottom: 1px solid #496c79; }
@@ -379,7 +385,13 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 
         <div><button type="button" id="reset-seats" onclick="clearGridSeats()" class="danger" style="width:100%;" disabled>Reset</button></div>
         </div>
-        <div class="workbook-save"><button type="button" id="save-excel" onclick="exportExcel()">Save and export my seating plan(s) as Excel</button></div>
+        <div class="workbook-save">
+            <div class="control-group" style="margin-bottom:12px;">
+                <label for="export-owner">What is your name? (optional)</label>
+                <input type="text" id="export-owner" placeholder="e.g. Jose Yu" maxlength="80" oninput="updateExportButton()">
+            </div>
+            <button type="button" id="save-excel" onclick="exportExcel()">Save and Export my seating plan</button>
+        </div>
         <div class="privacy-note">Your seating data stays in your browser until you download or print it. Keep your Excel file for next time.</div>
     </div>
 
@@ -412,6 +424,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 
         // --- Initialization ---
         document.addEventListener('DOMContentLoaded', () => {
+            updateExportButton();
             updateHeader();
             updateAppearance();
             generateGrid();
@@ -590,7 +603,74 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
             autoResizeSeats();
         }
 
+        // Detect writing systems without changing the original saved student data.
+        function detectStudentParts(student) {
+            const source = String(student.name || '').trim();
+            const japanese = /[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(source);
+            const scripts = ['Latin', 'Han', 'Hiragana', 'Katakana', 'Hangul', 'Cyrillic', 'Arabic', 'Hebrew', 'Greek', 'Devanagari', 'Thai', 'Bengali', 'Tamil', 'Georgian', 'Armenian'];
+            const groups = new Map();
+            const add = (kind, value) => groups.set(kind, (groups.get(kind) || '') + value);
+            if (student.num != null && String(student.num).trim() && String(student.num) !== '-') add('number', String(student.num).trim());
+            let previous = null, pending = '';
+            for (const character of source) {
+                if (/\s/u.test(character) || /['’\-.,]/u.test(character) || /\p{Mark}/u.test(character)) {
+                    pending += character;
+                    continue;
+                }
+                let kind = scripts.find(script => new RegExp('\\p{Script=' + script + '}', 'u').test(character));
+                if (japanese && ['Han', 'Hiragana', 'Katakana'].includes(kind)) kind = 'Japanese';
+                if (!kind) kind = /\p{Letter}/u.test(character) ? 'Other' : 'number';
+                if (pending && previous) add(previous, pending);
+                pending = '';
+                if (kind === 'number' && groups.has(kind) && previous !== kind) add(kind, ' ');
+                add(kind, character);
+                previous = kind;
+            }
+            if (pending && previous) add(previous, pending);
+            const parts = [...groups].map(([kind, text]) => ({kind, text: text.trim()})).filter(part => part.text);
+            parts.sort((a, b) => (a.kind === 'number' ? -1 : b.kind === 'number' ? 1 : 0));
+            return parts.length && parts.length <= 3 ? parts : null;
+        }
+
+        function fitStudentFields() {
+            const desk = document.querySelector('.desk');
+            if (!desk || !desk.clientWidth || !desk.clientHeight) return;
+            const width = Math.max(1, desk.clientWidth - 10);
+            const height = Math.max(1, desk.clientHeight - 10);
+            const probe = document.createElement('div');
+            probe.className = 'seat-field-text';
+            probe.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;visibility:hidden;`;
+            document.body.appendChild(probe);
+            const sizes = new Map();
+            try {
+                // Include unseated students so assigning a student never changes the class font sizes.
+                for (const student of students) {
+                    const parts = detectStudentParts(student);
+                    if (!parts) continue;
+                    const available = Math.max(1, height / parts.length - 4);
+                    for (const part of parts) {
+                        probe.textContent = part.text;
+                        probe.style.fontWeight = part.kind === 'number' ? '800' : '650';
+                        const base = Number(document.getElementById('font-name').value) || 12;
+                        const multiplier = part.kind === 'number' ? 0.85 : ['Han', 'Japanese', 'Hangul'].includes(part.kind) ? 1.35 : 1;
+                        let size = Math.min(40, Math.max(6, Math.floor(base * multiplier)), Math.floor(available / 1.12));
+                        size = Math.max(1, size);
+                        while (size > 1) {
+                            probe.style.fontSize = size + 'px';
+                            if (probe.scrollHeight <= available + 1 && probe.scrollWidth <= width + 1) break;
+                            size--;
+                        }
+                        sizes.set(part.kind, Math.min(sizes.get(part.kind) || Infinity, size));
+                    }
+                }
+                document.querySelectorAll('.seat-field').forEach(field => {
+                    field.firstElementChild.style.fontSize = (sizes.get(field.dataset.kind) || 12) + 'px';
+                });
+            } finally { probe.remove(); }
+        }
+
         function fitNamesToGrid() {
+            fitStudentFields();
             const mode = document.getElementById('text-wrap').value;
             document.querySelectorAll('.desk.occupied .st-name').forEach(name => {
                 name.style.fontSize = '';
@@ -791,13 +871,31 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
         function renderDeskContent(desk, student) {
             desk.replaceChildren();
             if (student) {
-                const number = document.createElement('div');
-                number.className = 'st-num';
-                number.textContent = student.num;
-                const name = document.createElement('div');
-                name.className = 'st-name';
-                name.textContent = student.name;
-                desk.append(number, name);
+                const parts = detectStudentParts(student);
+                if (parts) {
+                    const data = document.createElement('div');
+                    data.className = 'seat-data';
+                    data.style.gridTemplateRows = `repeat(${parts.length}, minmax(0, 1fr))`;
+                    for (const part of parts) {
+                        const field = document.createElement('div');
+                        field.className = 'seat-field';
+                        field.dataset.kind = part.kind;
+                        const text = document.createElement('span');
+                        text.className = 'seat-field-text';
+                        text.textContent = part.text;
+                        field.appendChild(text);
+                        data.appendChild(field);
+                    }
+                    desk.appendChild(data);
+                } else {
+                    const number = document.createElement('div');
+                    number.className = 'st-num';
+                    number.textContent = student.num;
+                    const name = document.createElement('div');
+                    name.className = 'st-name';
+                    name.textContent = student.name;
+                    desk.append(number, name);
+                }
             } else {
                 const empty = document.createElement('span');
                 empty.textContent = 'Empty';
@@ -1075,7 +1173,19 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
             XLSX.utils.book_append_sheet(workbook, studentsSheet, uniqueSheetName(workbook, `${title} Students`));
         }
 
+        function excelExportName(today = new Date()) {
+            const name = document.getElementById('export-owner').value.trim().replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
+            const date = String(today.getDate()).padStart(2, '0') +
+                String(today.getMonth() + 1).padStart(2, '0') + String(today.getFullYear()).slice(-2);
+            return `${name ? name + "'s" : 'My'} seating plan ${date}`;
+        }
+
+        function updateExportButton() {
+            document.getElementById('save-excel').textContent = `Save and Export my seating plan as "${excelExportName()}"`;
+        }
+
         function exportExcel() {
+            updateExportButton();
             if (!window.XLSX) { fileStatus('Excel library did not load. Reopen this page.', 'error'); return; }
             try {
                 syncActiveClass();
@@ -1098,10 +1208,7 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
                 const settingsSheet = XLSX.utils.aoa_to_sheet(settingsRows);
                 settingsSheet['!cols'] = [{ wch: 25 }, { wch: 50 }, { wch: 20 }];
                 XLSX.utils.book_append_sheet(workbook, settingsSheet, 'Settings');
-                const today = new Date();
-                const date = String(today.getDate()).padStart(2, '0') +
-                    String(today.getMonth() + 1).padStart(2, '0') + String(today.getFullYear()).slice(-2);
-                XLSX.writeFile(workbook, `My seating plans ${date}.xlsx`);
+                XLSX.writeFile(workbook, `${excelExportName()}.xlsx`);
                 fileStatus(`Downloaded ${classes.length} class(es) in one Excel file.`, 'success');
             } catch (error) { fileStatus(error.message || 'Could not create the Excel file.', 'error'); }
         }
